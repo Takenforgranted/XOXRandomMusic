@@ -6,8 +6,16 @@ from PyQt5.QtCore import Qt, QTimer, QUrl, QTime
 from PyQt5.QtGui import QKeyEvent
 
 import os
+import subprocess
+import logging
+import faulthandler
+import atexit
+import signal
 import random
+import sys
 import time
+
+os.environ["QT_MULTIMEDIA_PREFERRED_PLUGINS"] = "ffmpeg"
 
 global_score = 0.0
 global_start_time = 0
@@ -15,12 +23,229 @@ global_xd_mode = False
 global_correct_count = 0
 global_total_answered = 0
 
+LOG_ENABLED = 1
+LOG_OUTPUT_MODE = 1  # 0 = log to file only, 1 = log to console only
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game.log")
+_fault_log = None
+
+
+def setup_logging():
+    global _fault_log
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+
+    if not LOG_ENABLED:
+        root_logger.setLevel(logging.CRITICAL + 1)
+        root_logger.addHandler(logging.NullHandler())
+        return
+
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    if LOG_OUTPUT_MODE == 1:
+        handler = logging.StreamHandler(sys.stderr)
+        fault_output = sys.stderr
+    else:
+        handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        _fault_log = open(LOG_FILE, "a", encoding="utf-8")
+        fault_output = _fault_log
+
+    handler.setFormatter(formatter)
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(handler)
+    faulthandler.enable(file=fault_output, all_threads=True)
+
+
+def log_destination_text():
+    if not LOG_ENABLED:
+        return "日志当前已关闭"
+    if LOG_OUTPUT_MODE == 1:
+        return "错误详情已输出到终端"
+    return f"错误详情已写入日志：\n{LOG_FILE}"
+
+
+setup_logging()
+
+
+def log_unhandled_exception(exc_type, exc_value, exc_traceback):
+    logging.critical(
+        "未捕获异常",
+        exc_info=(exc_type, exc_value, exc_traceback)
+    )
+    if QApplication.instance():
+        QMessageBox.critical(
+            None,
+            "程序错误",
+            f"程序遇到错误，{log_destination_text()}\n\n{exc_value}"
+        )
+
+
+sys.excepthook = log_unhandled_exception
+
+_active_windows = []
+_music_players = []
+_is_switching_window = False
+
+
+def keep_window(window):
+    if window not in _active_windows:
+        _active_windows.append(window)
+    logging.info("保留窗口引用: %s, active=%d", window.__class__.__name__, len(_active_windows))
+
+
+def release_window(window):
+    try:
+        _active_windows.remove(window)
+        logging.info("释放窗口引用: %s, active=%d", window.__class__.__name__, len(_active_windows))
+    except ValueError:
+        pass
+
+
+def switch_window(next_window, previous_window=None):
+    global _is_switching_window
+
+    keep_window(next_window)
+    if previous_window:
+        _is_switching_window = True
+        try:
+            previous_window.close()
+            release_window(previous_window)
+        finally:
+            _is_switching_window = False
+
+    next_window._ignore_unexpected_close_until = time.monotonic() + 0.8
+    next_window.show()
+    next_window.raise_()
+    next_window.activateWindow()
+    logging.info("显示窗口: %s, active=%d", next_window.__class__.__name__, len(_active_windows))
+
+
+def ignore_unexpected_close(window, event):
+    ignore_until = getattr(window, "_ignore_unexpected_close_until", 0)
+    if not _is_switching_window and time.monotonic() < ignore_until:
+        logging.info("忽略窗口刚显示后的异常关闭请求: %s", window.__class__.__name__)
+        event.ignore()
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        return True
+    return False
+
+
+def quit_application():
+    logging.info("用户请求退出应用")
+    stop_all_music_players()
+    app = QApplication.instance()
+    if app:
+        app.quit()
+
+
+OPTION_BUTTON_STYLE = """
+    QPushButton {
+        font-size: 18px;
+        padding: 15px;
+        border-radius: 8px;
+        background: #f0f0f0;
+        border: 2px solid #ccc;
+    }
+    QPushButton:hover {
+        background: #e0e0e0;
+        border: 2px solid #aaa;
+    }
+    QPushButton:checked {
+        background: #d0e8f2;
+        border: 2px solid #79a3b1;
+    }
+"""
+
+OPTION_LABEL_STYLE = """
+    font-size: 16px;
+    font-weight: bold;
+    color: #666;
+    background: #e0e0e0;
+    padding: 5px 10px;
+    border-radius: 4px;
+    min-width: 30px;
+"""
+
+
+class MusicPlayer:
+    def __init__(self, volume=100):
+        self.volume = volume
+        self.process = None
+        self.qt_player = None
+        self.closed = False
+        _music_players.append(self)
+        if sys.platform != "darwin":
+            self.qt_player = QMediaPlayer()
+            self.qt_player.setVolume(volume)
+
+    def play(self, path):
+        if self.closed:
+            logging.info("忽略已关闭播放器的播放请求: %s", path)
+            return
+
+        self.stop()
+        absolute_path = os.path.abspath(path)
+        logging.info("播放音乐: %s", absolute_path)
+        if sys.platform == "darwin":
+            volume = max(0.0, min(self.volume / 100.0, 1.0))
+            self.process = subprocess.Popen(
+                ["afplay", "-v", str(volume), absolute_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+            return
+
+        media_content = QMediaContent(QUrl.fromLocalFile(absolute_path))
+        self.qt_player.setMedia(media_content)
+        self.qt_player.play()
+
+    def stop(self):
+        if self.process:
+            process = self.process
+            self.process = None
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            except ProcessLookupError:
+                pass
+
+        if self.qt_player:
+            self.qt_player.stop()
+
+    def close(self):
+        self.closed = True
+        self.stop()
+        try:
+            _music_players.remove(self)
+        except ValueError:
+            pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def stop_all_music_players():
+    for player in list(_music_players):
+        player.close()
+
+
+atexit.register(stop_all_music_players)
+
 
 class ResultWindow(QMainWindow):
     def __init__(self, total_time_seconds, total_questions):
         super().__init__()
         self.total_time = total_time_seconds
         self.total_questions = total_questions
+        self.is_restarting = False
         self.initUI()
 
     def initUI(self):
@@ -103,7 +328,7 @@ class ResultWindow(QMainWindow):
                 background-color: #d32f2f;
             }
         """)
-        close_btn.clicked.connect(self.close)
+        close_btn.clicked.connect(quit_application)
         btn_layout.addWidget(close_btn)
 
         restart_btn = QPushButton("重新答题", self)
@@ -134,15 +359,31 @@ class ResultWindow(QMainWindow):
         global_start_time = time.time()
         global_correct_count = 0
         global_total_answered = 0
+        self.is_restarting = True
+        logging.info("从结果页重新答题")
         self.next_window = SongSelectionUI()
-        self.close()
-        self.next_window.show()
+        switch_window(self.next_window, self)
+
+    def closeEvent(self, event):
+        if ignore_unexpected_close(self, event):
+            return
+        release_window(self)
+        if not self.is_restarting and not _is_switching_window:
+            quit_application()
+        super().closeEvent(event)
 
 
 class QuizUI(QMainWindow):
     def __init__(self, easy_music_range, hard_music_range, selected_difficulty, remaining_questions,
                  total_questions=None, accumulated_time=0):
         super().__init__()
+        logging.info(
+            "初始化答题窗口: difficulty=%s, easy=%d, hard=%d, remaining=%d",
+            selected_difficulty,
+            len(easy_music_range),
+            len(hard_music_range),
+            remaining_questions
+        )
         self.easy_music_range = easy_music_range
         self.hard_music_range = hard_music_range
         self.selected_difficulty = selected_difficulty
@@ -152,14 +393,19 @@ class QuizUI(QMainWindow):
         self.selected_option = None
         self.question_start_time = time.time()
         self.answer_confirmed = False
+        self.is_transitioning = False
+        self.is_closing = False
+        self.play_generation = 0
         self.next_accumulated_time = 0  # 新增：保存下一题的时间
 
-        self.media_player = QMediaPlayer()
-        self.media_player.setVolume(50)
+        self.media_player = MusicPlayer(volume=100)
 
         self.initUI()
+        logging.info("答题窗口UI初始化完成")
         self.setup_button_group()
+        logging.info("答题按钮组初始化完成")
         self.load_question()
+        logging.info("第一题加载完成: %s", getattr(self, "current_correct_path", ""))
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_timer_display)
@@ -214,9 +460,9 @@ class QuizUI(QMainWindow):
 
         top_layout = QHBoxLayout()
 
-        remaining_label = QLabel(f"剩余题目: {self.remaining_questions}/{self.total_questions}")
-        remaining_label.setStyleSheet("font-size: 16px; margin: 10px; color: #333;")
-        top_layout.addWidget(remaining_label)
+        self.remaining_label = QLabel(f"剩余题目: {self.remaining_questions}/{self.total_questions}")
+        self.remaining_label.setStyleSheet("font-size: 16px; margin: 10px; color: #333;")
+        top_layout.addWidget(self.remaining_label)
         top_layout.addStretch(1)
 
         self.timer_label = QLabel("⏱ 00:00.00")
@@ -255,15 +501,7 @@ class QuizUI(QMainWindow):
             option_layout.setContentsMargins(10, 5, 10, 5)
 
             num_label = QLabel(f"[{i+1}]")
-            num_label.setStyleSheet("""
-                font-size: 16px;
-                font-weight: bold;
-                color: #666;
-                background: #e0e0e0;
-                padding: 5px 10px;
-                border-radius: 4px;
-                min-width: 30px;
-            """)
+            num_label.setStyleSheet(OPTION_LABEL_STYLE)
             num_label.setAlignment(Qt.AlignCenter)
             self.option_labels.append(num_label)
             option_layout.addWidget(num_label)
@@ -271,23 +509,7 @@ class QuizUI(QMainWindow):
             btn = QPushButton("选项")
             btn.setProperty("index", i)
             btn.setCheckable(True)
-            btn.setStyleSheet("""
-                QPushButton {
-                    font-size: 18px;
-                    padding: 15px;
-                    border-radius: 8px;
-                    background: #f0f0f0;
-                    border: 2px solid #ccc;
-                }
-                QPushButton:hover {
-                    background: #e0e0e0;
-                    border: 2px solid #aaa;
-                }
-                QPushButton:checked {
-                    background: #d0e8f2;
-                    border: 2px solid #79a3b1;
-                }
-            """)
+            btn.setStyleSheet(OPTION_BUTTON_STYLE)
             option_layout.addWidget(btn, 1)
             self.option_btns.append(btn)
 
@@ -336,6 +558,32 @@ class QuizUI(QMainWindow):
                 self.select_option(3)
 
         super().keyPressEvent(event)
+
+    def reset_question_state(self):
+        self.answer_confirmed = False
+        self.selected_option = None
+        self.question_start_time = time.time()
+        self.remaining_label.setText(f"剩余题目: {self.remaining_questions}/{self.total_questions}")
+        self.current_score_label.setText(f"当前得分: {round(global_score, 2)}")
+
+        for btn in self.option_btns:
+            btn.setStyleSheet(OPTION_BUTTON_STYLE)
+            btn.setEnabled(True)
+            btn.setChecked(False)
+
+        for label in self.option_labels:
+            label.setStyleSheet(OPTION_LABEL_STYLE)
+
+        self.confirm_btn.setEnabled(False)
+        self.confirm_btn.setText("确认 (Enter)")
+        try:
+            self.confirm_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self.confirm_btn.clicked.connect(self.confirm_answer)
+
+    def finish_question_transition(self):
+        self.is_transitioning = False
 
     def select_option(self, index):
         if index < len(self.option_btns):
@@ -387,8 +635,11 @@ class QuizUI(QMainWindow):
 
     def load_question(self):
         self.answer_confirmed = False
+        self.play_generation += 1
 
         if self.selected_difficulty == "简单":
+            if len(self.easy_music_range) < 4:
+                raise ValueError(f"简单难度至少需要4首可用歌曲，当前剩余{len(self.easy_music_range)}首")
             correct_index = random.randint(0, len(self.easy_music_range) - 1)
             correct_song = list(self.easy_music_range)[correct_index]
             self.current_correct_path = correct_song
@@ -403,23 +654,24 @@ class QuizUI(QMainWindow):
         elif self.selected_difficulty == "普通":
             easy_songs = list(self.easy_music_range)
             hard_songs = list(self.hard_music_range)
-            correct_song = random.choice(easy_songs + hard_songs)
+            all_songs = easy_songs + hard_songs
+            if len(all_songs) < 4:
+                raise ValueError(f"普通难度至少需要4首可用歌曲，当前剩余{len(all_songs)}首")
+
+            correct_song = random.choice(all_songs)
             self.current_correct_path = correct_song
             correct_name = self.get_song_name(correct_song)
             self.correct_name = correct_name
-            if correct_song in easy_songs:
-                wrong_easy = random.sample([s for s in easy_songs if s != correct_song], 1)
-                wrong_hard = random.sample(hard_songs, 2)
+            wrong_options = random.sample([song for song in all_songs if song != correct_song], 3)
+            if correct_song in self.easy_music_range:
                 self.easy_music_range = {song for song in self.easy_music_range if song != correct_song}
             else:
-                wrong_easy = random.sample(easy_songs, 2)
-                wrong_hard = random.sample([s for s in hard_songs if s != correct_song], 1)
                 self.hard_music_range = {song for song in self.hard_music_range if song != correct_song}
-            wrong_options = wrong_easy + wrong_hard
-            random.shuffle(wrong_options)
             wrong_names = [self.get_song_name(song) for song in wrong_options]
 
         elif self.selected_difficulty == "困难":
+            if len(self.hard_music_range) < 4:
+                raise ValueError(f"困难难度至少需要4首可用歌曲，当前剩余{len(self.hard_music_range)}首")
             correct_index = random.randint(0, len(self.hard_music_range) - 1)
             correct_song = list(self.hard_music_range)[correct_index]
             self.current_correct_path = correct_song
@@ -439,39 +691,47 @@ class QuizUI(QMainWindow):
             btn.setProperty("is_correct", all_options[i] == correct_name)
             btn.setEnabled(True)
             btn.setChecked(False)
+            btn.setStyleSheet(OPTION_BUTTON_STYLE)
 
         for label in self.option_labels:
-            label.setStyleSheet("""
-                font-size: 16px;
-                font-weight: bold;
-                color: #666;
-                background: #e0e0e0;
-                padding: 5px 10px;
-                border-radius: 4px;
-                min-width: 30px;
-            """)
+            label.setStyleSheet(OPTION_LABEL_STYLE)
 
         self.selected_option = None
         self.confirm_btn.setEnabled(False)
         self.confirm_btn.setText("确认 (Enter)")
 
-        QTimer.singleShot(500, self.play_current_music)
+        play_generation = self.play_generation
+        QTimer.singleShot(500, lambda: self.play_current_music(play_generation))
 
     def on_option_selected(self, button):
         self.selected_option = self.button_group.id(button)
         self.confirm_btn.setEnabled(True)
         self.update_option_labels(self.selected_option)
 
-    def play_current_music(self):
-        if hasattr(self, 'current_correct_path') and self.current_correct_path:
-            media_content = QMediaContent(QUrl.fromLocalFile(self.current_correct_path))
-            self.media_player.setMedia(media_content)
-            self.media_player.play()
+    def play_current_music(self, play_generation=None):
+        if play_generation != self.play_generation:
+            logging.info("忽略过期的延迟播放请求")
+            return
+
+        if self.is_closing or not self.isVisible():
+            logging.info("忽略已关闭窗口的延迟播放请求")
+            return
+
+        if self.media_player and hasattr(self, 'current_correct_path') and self.current_correct_path:
+            try:
+                self.media_player.play(self.current_correct_path)
+            except Exception as exc:
+                logging.exception("播放音乐失败: %s", self.current_correct_path)
+                QMessageBox.critical(
+                    self,
+                    "播放失败",
+                    f"音乐播放失败，{log_destination_text()}\n\n{exc}"
+                )
 
     def confirm_answer(self):
         global global_score, global_correct_count, global_total_answered
 
-        if self.selected_option is None or self.answer_confirmed:
+        if self.selected_option is None or self.answer_confirmed or self.is_transitioning:
             return
 
         self.answer_confirmed = True
@@ -550,27 +810,42 @@ class QuizUI(QMainWindow):
         self.confirm_btn.clicked.connect(lambda: self.next_question(self.next_accumulated_time))
 
     def next_question(self, accumulated_time):
+        if self.is_transitioning:
+            logging.info("忽略重复切题请求")
+            return
+
+        self.is_transitioning = True
+        self.is_closing = True
         if self.media_player:
             self.media_player.stop()
-            self.media_player = None
 
         if self.remaining_questions <= 1:
             total_time = accumulated_time
             self.result_window = ResultWindow(total_time, self.total_questions)
-            self.result_window.show()
-            self.close()
+            switch_window(self.result_window, self)
             return
 
-        self.next_window = QuizUI(
-            easy_music_range=self.easy_music_range,
-            hard_music_range=self.hard_music_range,
-            selected_difficulty=self.selected_difficulty,
-            remaining_questions=self.remaining_questions - 1,
-            total_questions=self.total_questions,
-            accumulated_time=accumulated_time
-        )
-        self.close()
-        self.next_window.show()
+        self.remaining_questions -= 1
+        self.accumulated_time = accumulated_time
+        self.is_closing = False
+        self.reset_question_state()
+        self.timer.start(100)
+        self.load_question()
+        logging.info("下一题加载完成: %s", getattr(self, "current_correct_path", ""))
+        QTimer.singleShot(100, self.finish_question_transition)
+
+    def closeEvent(self, event):
+        if ignore_unexpected_close(self, event):
+            return
+        self.is_closing = True
+        self.play_generation += 1
+        if self.media_player:
+            self.media_player.close()
+            self.media_player = None
+        release_window(self)
+        if not _is_switching_window:
+            quit_application()
+        super().closeEvent(event)
 
 
 class DifficultySelectionUI(QMainWindow):
@@ -681,7 +956,22 @@ class DifficultySelectionUI(QMainWindow):
         global_xd_mode = (state == Qt.Checked)
 
     def on_confirm_click(self):
+        try:
+            self.start_quiz()
+        except Exception as exc:
+            logging.exception("开始答题失败")
+            QMessageBox.critical(
+                self,
+                "开始失败",
+                f"开始答题时发生错误，{log_destination_text()}\n\n{exc}"
+            )
+
+    def start_quiz(self):
         global global_start_time, global_score, global_correct_count, global_total_answered
+
+        if not self.selected_difficulty:
+            QMessageBox.warning(self, "请选择难度", "请先选择一个难度。")
+            return
 
         global_score = 0.0
         global_correct_count = 0
@@ -693,7 +983,7 @@ class DifficultySelectionUI(QMainWindow):
             base_path = os.path.join(self.music_root, ip, sub_dir)
             for root, dirs, files in os.walk(base_path):
                 for file in files:
-                    if file.endswith('.mp3') or file.endswith('.wav'):
+                    if file.lower().endswith(('.mp3', '.wav')):
                         if "easy" in root.lower():
                             easy_music_range.add(os.path.join(root, file))
                         elif "hard" in root.lower():
@@ -702,21 +992,59 @@ class DifficultySelectionUI(QMainWindow):
         if self.selected_difficulty == "简单":
             quiz_easy = easy_music_range
             quiz_hard = set()
-            question_count = 10
+            desired_question_count = 10
         elif self.selected_difficulty == "困难":
             quiz_easy = set()
             quiz_hard = hard_music_range
-            question_count = 5
+            desired_question_count = 5
         else:
             quiz_easy = easy_music_range
             quiz_hard = hard_music_range
-            question_count = 8
+            desired_question_count = 8
+
+        available_count = len(quiz_easy) + len(quiz_hard)
+        max_question_count = max(0, available_count - 3)
+        question_count = min(desired_question_count, max_question_count)
+        logging.info(
+            "选择难度: %s, easy=%d, hard=%d, 可出题=%d, 实际题数=%d, 已选歌单=%s",
+            self.selected_difficulty,
+            len(quiz_easy),
+            len(quiz_hard),
+            max_question_count,
+            question_count,
+            sorted(self.selected_folders)
+        )
+
+        if question_count <= 0:
+            QMessageBox.warning(
+                self,
+                "歌曲数量不足",
+                f"{self.selected_difficulty}难度至少需要4首可用歌曲，当前只有{available_count}首。"
+            )
+            return
+
+        if question_count < desired_question_count:
+            QMessageBox.information(
+                self,
+                "题数已调整",
+                f"当前歌单数量不足以生成{desired_question_count}题，本轮将生成{question_count}题。"
+            )
 
         global_start_time = time.time()
 
-        self.close()
+        logging.info("开始创建答题窗口")
         self.quiz_ui = QuizUI(quiz_easy, quiz_hard, self.selected_difficulty, question_count, question_count, 0)
-        self.quiz_ui.show()
+        logging.info("答题窗口创建完成，准备显示")
+        switch_window(self.quiz_ui, self)
+        logging.info("答题窗口已显示")
+
+    def closeEvent(self, event):
+        if ignore_unexpected_close(self, event):
+            return
+        release_window(self)
+        if not _is_switching_window:
+            quit_application()
+        super().closeEvent(event)
 
 
 class SongSelectionUI(QMainWindow):
@@ -878,14 +1206,24 @@ class SongSelectionUI(QMainWindow):
             ip_cb.setCheckState(Qt.PartiallyChecked)
 
     def go_next_step(self):
-        self.close()
         self.difficulty_ui = DifficultySelectionUI(self.selected_folders)
-        self.difficulty_ui.show()
+        switch_window(self.difficulty_ui, self)
+
+    def closeEvent(self, event):
+        if ignore_unexpected_close(self, event):
+            return
+        release_window(self)
+        if not _is_switching_window:
+            quit_application()
+        super().closeEvent(event)
 
 
 if __name__ == '__main__':
     import sys
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    app.aboutToQuit.connect(stop_all_music_players)
     ex = SongSelectionUI()
+    keep_window(ex)
     ex.show()
     sys.exit(app.exec_())
