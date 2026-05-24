@@ -1,6 +1,6 @@
 # 晒你纪偶研摊位二偶猜歌小游戏
 
-🎵 这是一个为西电晒你纪偶研摊位设计的猜歌小游戏，基于Python 3.10+和PyQt5开发。玩家需要从播放的歌曲片段中猜出正确的歌曲名称，挑战自己的二偶厨力 or 抽查好厚米的成分！([现场盛况](https://www.bilibili.com/video/BV1VJj5z9ESN?p=3))
+🎵 这是一个为西电晒你纪偶研摊位设计的猜歌小游戏，基于Python 3.10+和PyQt5开发。玩家需要从播放的歌曲片段中猜出正确的歌曲名称，挑战自己的二偶厨力 or 抽查好厚米的成分！([2025年现场盛况](https://www.bilibili.com/video/BV1VJj5z9ESN?p=3)/[2026年现场盛况](https://www.bilibili.com/video/BV1q5GJ6mEnW))
 
 
 
@@ -121,7 +121,7 @@ python flac2mp3.py target_dir [-o output_dir] [-b bitrate] [-r] [-d] [-t threads
 
 ## 歌曲资源
 
-晒你纪上使用的歌曲将稍后上传到网盘，下载后请放在`music/`目录下，按以下结构组织：
+晒你纪上使用的歌曲已上传到[网盘](https://pan.baidu.com/s/1f8DEFuX7457QLa44Mytlag?pwd=vn7i)，下载后请放在`music/`目录下，按以下结构组织：
 ```
 music/
 ├── IP名称1/
@@ -143,4 +143,4 @@ music/
 
 ---
 
-🎉 祝你在西电晒你纪玩得开心！记得来偶研摊位挑战一下你的音乐知识哦！（[nsy写真](https://pan.baidu.com/s/16JqrUhif_tIqg5qSf8GIYA?pwd=vwcu)）
+🎉 祝你在西电晒你纪玩得开心！记得来偶研摊位挑战一下你的音乐知识哦！（[部分nsy写真](https://pan.baidu.com/s/16JqrUhif_tIqg5qSf8GIYA?pwd=vwcu)）
