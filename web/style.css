@@ -1,0 +1,504 @@
+/* ==========================================================================
+   听歌猜名挑战 · 网页版样式
+   配色与布局尽量还原原 PyQt5 界面（game.py 中的 QSS 样式）
+   ========================================================================== */
+
+* {
+    box-sizing: border-box;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background: #f0f0f0;
+    color: #333;
+    font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Segoe UI", sans-serif;
+    font-size: 16px;
+}
+
+#app {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 24px 16px 40px;
+    min-height: 100vh;
+}
+
+.view {
+    display: none;
+}
+.view.active {
+    display: block;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* ---------------- 标题 ---------------- */
+.page-title {
+    text-align: center;
+    font-size: 30px;
+    font-weight: bold;
+    color: #333;
+    margin: 8px 0 4px;
+}
+.sub-title {
+    font-size: 17px;
+    font-weight: bold;
+    color: #333;
+    margin: 18px 0 12px;
+}
+
+/* ---------------- 歌单选择（SongSelectionUI） ---------------- */
+.scroll-area {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 10px;
+    max-height: 62vh;
+    overflow-y: auto;
+}
+
+.ip-box {
+    background: #F5F5F5;
+    border-radius: 4px;
+    margin-bottom: 8px;
+    padding: 8px;
+    transition: background 0.15s;
+}
+.ip-box:hover {
+    background: #EDEDED;
+}
+
+.ip-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0;
+    cursor: pointer;
+}
+.ip-header input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: #4CAF50;
+}
+.ip-name {
+    font-weight: bold;
+    font-size: 15px;
+    user-select: none;
+}
+
+.sub-list {
+    margin: 6px 0 2px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.sub-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    user-select: none;
+}
+.sub-item input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+    accent-color: #4CAF50;
+}
+.sub-count {
+    font-size: 12px;
+    color: #999;
+    margin-left: 2px;
+}
+
+/* ---------------- 难度选择（DifficultySelectionUI） ---------------- */
+.radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 12px 0;
+}
+.radio-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    cursor: pointer;
+}
+.radio-item input {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #4CAF50;
+}
+
+.xd-box {
+    background: #fff3e0;
+    border: 2px solid #ff9800;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 18px 0;
+}
+.xd-title {
+    margin: 0 0 10px;
+    font-size: 16px;
+    font-weight: bold;
+    color: #e65100;
+}
+.xd-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #bf360c;
+    cursor: pointer;
+}
+.xd-check input {
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    accent-color: #e65100;
+}
+.xd-desc {
+    margin: 10px 0 0;
+    text-align: center;
+    font-size: 12px;
+    color: #d84315;
+    line-height: 1.6;
+}
+
+/* ---------------- 答题（QuizUI） ---------------- */
+.xd-warning {
+    font-size: 14px;
+    color: #d32f2f;
+    font-weight: bold;
+    background: #ffebee;
+    padding: 8px;
+    border-radius: 4px;
+    border: 1px solid #ef5350;
+    text-align: center;
+    margin-bottom: 10px;
+}
+
+.keyboard-hint {
+    font-size: 13px;
+    color: #666;
+    background: #f5f5f5;
+    padding: 6px;
+    border-radius: 4px;
+    text-align: center;
+    margin-bottom: 12px;
+}
+
+.top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+.info-label {
+    font-size: 16px;
+    color: #333;
+}
+.score-label {
+    font-size: 16px;
+    color: #2e7d32;
+}
+.timer {
+    font-size: 20px;
+    font-weight: bold;
+    color: #1565c0;
+    font-family: 'Courier New', Courier, monospace;
+    background: #e3f2fd;
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: 2px solid #1976d2;
+}
+
+.player-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+}
+.player-row audio {
+    display: none;
+}
+.play-hint {
+    font-size: 13px;
+    color: #e65100;
+    background: #fff3e0;
+    border: 1px solid #ff9800;
+    padding: 4px 10px;
+    border-radius: 4px;
+}
+
+/* ---------------- 选项（OptionButton） ---------------- */
+.options {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 8px 0 20px;
+}
+
+.option-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.num-label {
+    font-size: 16px;
+    font-weight: bold;
+    color: #666;
+    background: #e0e0e0;
+    padding: 5px 10px;
+    border-radius: 4px;
+    min-width: 42px;
+    text-align: center;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+}
+.num-label.selected {
+    color: #fff;
+    background: #1976d2;
+}
+.num-label.correct {
+    color: #fff;
+    background: #4caf50;
+}
+.num-label.wrong {
+    color: #fff;
+    background: #f44336;
+}
+
+.option-btn {
+    flex: 1;
+    font-size: 18px;
+    padding: 15px;
+    border-radius: 8px;
+    background: #f0f0f0;
+    border: 2px solid #ccc;
+    cursor: pointer;
+    text-align: center;
+    font-family: inherit;
+    color: #333;
+    word-break: break-all;
+    transition: background 0.15s, border-color 0.15s;
+}
+.option-btn:hover:not(:disabled) {
+    background: #e0e0e0;
+    border-color: #aaa;
+}
+.option-btn:checked,
+.option-btn.selected {
+    background: #d0e8f2;
+    border-color: #79a3b1;
+}
+.option-btn:disabled {
+    cursor: default;
+    opacity: 0.9;
+}
+.option-btn.correct {
+    background: #c8e6c9;
+    border-color: #4caf50;
+}
+.option-btn.wrong {
+    background: #ef9a9a;
+    border-color: #f44336;
+}
+
+/* ---------------- 按钮 ---------------- */
+.footer-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+}
+
+.primary-btn {
+    font-size: 16px;
+    font-weight: bold;
+    background: #4CAF50;
+    color: #fff;
+    padding: 10px 30px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    min-width: 140px;
+    font-family: inherit;
+}
+.primary-btn:hover:not(:disabled) {
+    background: #45a049;
+}
+.primary-btn:disabled {
+    background: #CCCCCC;
+    cursor: not-allowed;
+}
+
+.confirm-btn {
+    font-size: 20px;
+    font-weight: bold;
+    background: #4CAF50;
+    color: #fff;
+    padding: 12px 30px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    margin: 10px 0;
+    font-family: inherit;
+}
+.confirm-btn:hover:not(:disabled) {
+    background: #45a049;
+}
+.confirm-btn:disabled {
+    background: #CCCCCC;
+    cursor: not-allowed;
+}
+
+.small-btn {
+    font-size: 14px;
+    background: #fff;
+    color: #333;
+    padding: 6px 14px;
+    border: 1px solid #bbb;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+}
+.small-btn:hover {
+    background: #f0f0f0;
+}
+
+.link-btn {
+    font-size: 14px;
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    text-decoration: underline;
+    font-family: inherit;
+}
+.link-btn:hover {
+    color: #555;
+}
+
+/* ---------------- 结果页（ResultWindow） ---------------- */
+#result-content {
+    text-align: center;
+    padding-top: 16px;
+}
+.result-xd-label {
+    font-size: 14px;
+    color: #d32f2f;
+    font-weight: bold;
+    margin-bottom: 10px;
+}
+.result-title {
+    font-size: 26px;
+    font-weight: bold;
+    color: #333;
+    margin: 10px 0;
+}
+.result-score-ok {
+    font-size: 22px;
+    color: #2e7d32;
+    font-weight: bold;
+    margin: 8px 0;
+}
+.result-score-fail {
+    font-size: 22px;
+    color: #d32f2f;
+    font-weight: bold;
+    margin: 8px 0;
+}
+.result-xd-fail {
+    font-size: 14px;
+    color: #d32f2f;
+    font-weight: bold;
+    background: #ffebee;
+    padding: 8px;
+    border-radius: 4px;
+    margin: 8px auto 0;
+    max-width: 420px;
+}
+.result-accuracy {
+    font-size: 16px;
+    color: #555;
+    margin: 8px 0;
+}
+.result-time {
+    font-size: 16px;
+    color: #1565c0;
+    margin: 8px 0;
+}
+.result-divider {
+    border: none;
+    border-top: 1px solid #ccc;
+    margin: 18px auto;
+    width: 80%;
+}
+
+/* ---------------- 空状态提示 ---------------- */
+.empty-tip {
+    text-align: center;
+    color: #888;
+    font-size: 15px;
+    padding: 30px 10px;
+}
+
+/* ---------------- 模态框（模拟 QMessageBox） ---------------- */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.modal-box {
+    background: #fafafa;
+    border-radius: 8px;
+    padding: 26px 30px;
+    min-width: 320px;
+    max-width: 480px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+    text-align: center;
+}
+.modal-box h3 {
+    margin: 0 0 14px;
+    font-size: 18px;
+    color: #333;
+}
+.modal-box p {
+    margin: 0 0 22px;
+    font-size: 15px;
+    color: #555;
+    line-height: 1.7;
+    white-space: pre-line;
+}
+
+/* ---------------- 滚动条 ---------------- */
+.scroll-area::-webkit-scrollbar {
+    width: 10px;
+}
+.scroll-area::-webkit-scrollbar-thumb {
+    background: #bbb;
+    border-radius: 5px;
+}
+.scroll-area::-webkit-scrollbar-track {
+    background: #eee;
+}

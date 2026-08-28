@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>听歌猜名挑战 - 网页版</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ 一、选择歌单（对应 SongSelectionUI） ============ -->
+  <section id="view-playlists" class="view active">
+    <div class="page-title">听歌猜名挑战</div>
+    <h2 class="sub-title">请选择要挑战的歌单范围：</h2>
+    <div id="playlist-scroll" class="scroll-area"></div>
+    <div class="footer-bar">
+      <button id="btn-start" class="primary-btn" disabled>开始挑战 (0)</button>
+    </div>
+  </section>
+
+  <!-- ============ 二、选择难度（对应 DifficultySelectionUI） ============ -->
+  <section id="view-difficulty" class="view">
+    <h2 class="sub-title">请选择难度：</h2>
+    <div class="radio-group">
+      <label class="radio-item"><input type="radio" name="difficulty" value="简单"><span>简单</span></label>
+      <label class="radio-item"><input type="radio" name="difficulty" value="普通"><span>普通</span></label>
+      <label class="radio-item"><input type="radio" name="difficulty" value="困难"><span>困难</span></label>
+    </div>
+
+    <div class="xd-box">
+      <h3 class="xd-title">😈 XD模式（极限挑战）</h3>
+      <label class="xd-check"><input type="checkbox" id="xd-checkbox"><span>启用XD模式</span></label>
+      <p class="xd-desc">规则：正确率低于50%时，<br>最终得分将强制归零！</p>
+    </div>
+
+    <div class="footer-bar">
+      <button id="btn-confirm-difficulty" class="primary-btn">确认</button>
+    </div>
+  </section>
+
+  <!-- ============ 三、答题（对应 QuizUI） ============ -->
+  <section id="view-quiz" class="view">
+    <div id="xd-warning" class="xd-warning hidden">⚠️ XD模式：正确率低于50%时得分将归零！</div>
+    <div class="keyboard-hint">💡 快捷键：1/2/3/4 选择选项，Enter 确认 / 下一题</div>
+
+    <div class="top-bar">
+      <span id="quiz-remaining" class="info-label">剩余题目: 0/0</span>
+      <span id="quiz-timer" class="timer">⏱ 00:00.00</span>
+      <span id="quiz-score" class="score-label">当前得分: 0.0</span>
+    </div>
+
+    <div class="player-row">
+      <audio id="audio-player" preload="auto"></audio>
+      <button id="btn-play-toggle" class="small-btn" title="播放 / 暂停">⏸ 暂停</button>
+      <button id="btn-replay" class="small-btn" title="从头播放">🔁 重听</button>
+      <span id="play-hint" class="play-hint hidden"></span>
+    </div>
+
+    <div id="quiz-options" class="options"></div>
+
+    <div class="footer-bar">
+      <button id="btn-confirm-answer" class="confirm-btn" disabled>确认 (Enter)</button>
+      <button id="btn-quit" class="link-btn" title="放弃本局并返回选单">✕ 退出本局</button>
+    </div>
+  </section>
+
+  <!-- ============ 四、答题结果（对应 ResultWindow） ============ -->
+  <section id="view-result" class="view">
+    <div id="result-content"></div>
+  </section>
+
+</div>
+
+<!-- 模态提示框（模拟 QMessageBox） -->
+<div id="modal-overlay" class="modal-overlay hidden">
+  <div class="modal-box">
+    <h3 id="modal-title"></h3>
+    <p id="modal-message"></p>
+    <button id="modal-ok" class="primary-btn">确定</button>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
