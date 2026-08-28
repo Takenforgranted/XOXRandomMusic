@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-听歌猜名挑战 —— 本地网页版后端服务
-====================================
+听歌猜名挑战 —— 网页版后端服务（waitress 多线程 WSGI 部署）
+============================================================
 本文件保留原 game.py 的全部游戏逻辑（歌单扫描 / 难度 / XD模式 / 出题 / 计分 / 计时 / 结果判定），
 仅将 PyQt5 界面替换为 web/ 目录下的网页前端，并额外提供音乐文件的 HTTP 流式播放（支持 Range）。
 
@@ -10,6 +10,17 @@
     或双击 启动网页游戏.bat
 
 启动后会自动打开浏览器访问 http://127.0.0.1:8000/
+
+部署到服务器（多玩家并发）：
+    - 使用 waitress（线程化 WSGI 服务器）承载并发请求，多个玩家可同时答题；
+    - 默认监听 0.0.0.0:8000，服务器上的其他玩家通过 http://<服务器IP>:8000/ 访问；
+    - 共享状态（全局 XD 开关 / 会话表 / 每个会话的答题进度）均已加锁保护，避免并发读写竞态。
+
+可用环境变量覆盖默认配置：
+    XOX_WEB_HOST=0.0.0.0     监听地址（仅本机访问可设为 127.0.0.1）
+    XOX_WEB_PORT=8000        端口
+    XOX_WEB_THREADS=8        waitress 工作线程数
+    XOX_WEB_OPEN_BROWSER=1   是否启动时自动打开浏览器（0 关闭）
 """
 import json
 import logging
@@ -20,14 +31,14 @@ import threading
 import time
 import uuid
 import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, unquote
+from waitress import serve
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MUSIC_ROOT = os.path.join(BASE_DIR, "music")
 WEB_DIR = os.path.join(BASE_DIR, "web")
-HOST = "127.0.0.1"
+HOST = os.environ.get("XOX_WEB_HOST", "0.0.0.0")  # 服务器部署需监听所有网卡，多玩家才能访问
 PORT = int(os.environ.get("XOX_WEB_PORT", "8000"))
+THREADS = int(os.environ.get("XOX_WEB_THREADS", "8"))  # waitress 并发工作线程数
 MAX_SESSIONS = 64
 
 # Windows 控制台统一使用 UTF-8，避免中文日志乱码
@@ -45,6 +56,7 @@ log = logging.getLogger("xox-web")
 global_xd_mode = False          # 对应原 game.py 的 global_xd_mode
 _sessions = {}                  # quiz_id -> QuizSession
 _session_order = []             # 用于按序清理旧会话
+_global_lock = threading.RLock()  # 保护全局状态（xd开关 / 会话表 / 会话清理顺序）
 
 AUDIO_EXT_CONTENT_TYPE = {
     ".mp3": "audio/mpeg",
@@ -88,6 +100,7 @@ class QuizSession:
         self.answered = False
         self.answer_result = None   # {"selected_index","correct_indices","is_correct"}
         self.finished = False
+        self.lock = threading.RLock()  # 保护本会话的答题状态，避免并发请求竞态
         self._generate_question()
 
     # ---------- 出题（对应 game.py QuizUI.load_question） ----------
@@ -144,93 +157,97 @@ class QuizSession:
 
     # ---------- 判定（对应 game.py QuizUI.confirm_answer） ----------
     def confirm(self, selected_index):
-        if self.answered or self.finished:
-            return False
-        if not isinstance(selected_index, int) or not (0 <= selected_index < len(self.current_options)):
-            return False
+        with self.lock:
+            if self.answered or self.finished:
+                return False
+            if not isinstance(selected_index, int) or not (0 <= selected_index < len(self.current_options)):
+                return False
 
-        self.answered = True
-        self.total_answered += 1
-        elapsed = time.time() - self.question_start_wall
-        self.accumulated_time += elapsed
+            self.answered = True
+            self.total_answered += 1
+            elapsed = time.time() - self.question_start_wall
+            self.accumulated_time += elapsed
 
-        # 与原版一致：同名选项视为正确（可能有多于一个“正确”按钮）
-        correct_indices = [i for i, name in enumerate(self.current_options) if name == self.correct_name]
-        is_correct = selected_index in correct_indices
-        self.answer_result = {
-            "selected_index": selected_index,
-            "correct_indices": correct_indices,
-            "is_correct": is_correct,
-        }
-        if is_correct:
-            self.correct_count += 1
-            self.score += DIFF_SCORE.get(self.difficulty, 1.0)
-        log.info("答题[%s] 第%d题 选中=%d %s (得分=%.2f 正确=%d/%d)",
-                 self.difficulty, self.total_answered, selected_index,
-                 "答对" if is_correct else "答错", self.score,
-                 self.correct_count, self.total_answered)
-        return True
+            # 与原版一致：同名选项视为正确（可能有多于一个“正确”按钮）
+            correct_indices = [i for i, name in enumerate(self.current_options) if name == self.correct_name]
+            is_correct = selected_index in correct_indices
+            self.answer_result = {
+                "selected_index": selected_index,
+                "correct_indices": correct_indices,
+                "is_correct": is_correct,
+            }
+            if is_correct:
+                self.correct_count += 1
+                self.score += DIFF_SCORE.get(self.difficulty, 1.0)
+            log.info("答题[%s] 第%d题 选中=%d %s (得分=%.2f 正确=%d/%d)",
+                     self.difficulty, self.total_answered, selected_index,
+                     "答对" if is_correct else "答错", self.score,
+                     self.correct_count, self.total_answered)
+            return True
 
     # ---------- 切题（对应 game.py QuizUI.next_question） ----------
     def advance(self):
-        if not self.answered:
-            return False
-        if self.remaining <= 1:
-            self.finished = True
+        with self.lock:
+            if not self.answered:
+                return False
+            if self.remaining <= 1:
+                self.finished = True
+                return True
+            self.remaining -= 1
+            self._generate_question()
             return True
-        self.remaining -= 1
-        self._generate_question()
-        return True
 
     # ---------- 结果（对应 game.py ResultWindow.initUI 的判定） ----------
     def result(self):
-        total = self.total_questions
-        accuracy = (self.correct_count / total * 100) if total > 0 else 0
-        xd_failed = False
-        score = self.score
-        if self.xd_mode and accuracy < 50:
-            xd_failed = True
-            score = 0
-        minutes = int(self.accumulated_time // 60)
-        seconds = int(self.accumulated_time % 60)
-        milliseconds = int((self.accumulated_time % 1) * 100)
-        time_str = f"{minutes:02d}:{seconds:02d}.{milliseconds:02d}"
-        return {
-            "xd_mode": self.xd_mode,
-            "xd_failed": xd_failed,
-            "score": round(score, 2),
-            "raw_score": round(self.score, 2),
-            "correct_count": self.correct_count,
-            "total": total,
-            "accuracy": round(accuracy, 1),
-            "total_time": round(self.accumulated_time, 3),
-            "time_str": time_str,
-            "xd_message": (f"XD模式：正确率 {accuracy:.1f}% < 50%，你已被斩杀！"
-                           if xd_failed else None),
-        }
+        with self.lock:
+            total = self.total_questions
+            accuracy = (self.correct_count / total * 100) if total > 0 else 0
+            xd_failed = False
+            score = self.score
+            if self.xd_mode and accuracy < 50:
+                xd_failed = True
+                score = 0
+            minutes = int(self.accumulated_time // 60)
+            seconds = int(self.accumulated_time % 60)
+            milliseconds = int((self.accumulated_time % 1) * 100)
+            time_str = f"{minutes:02d}:{seconds:02d}.{milliseconds:02d}"
+            return {
+                "xd_mode": self.xd_mode,
+                "xd_failed": xd_failed,
+                "score": round(score, 2),
+                "raw_score": round(self.score, 2),
+                "correct_count": self.correct_count,
+                "total": total,
+                "accuracy": round(accuracy, 1),
+                "total_time": round(self.accumulated_time, 3),
+                "time_str": time_str,
+                "xd_message": (f"XD模式：正确率 {accuracy:.1f}% < 50%，你已被斩杀！"
+                               if xd_failed else None),
+            }
 
     # ---------- 当前题目状态（供前端渲染） ----------
     def state(self):
-        data = {
-            "quiz_id": self.quiz_id,
-            "options": list(self.current_options),
-            "answered": self.answered,
-            "remaining": self.remaining,
-            "total": self.total_questions,
-            "score": round(self.score, 2),
-            "correct_count": self.correct_count,
-            "total_answered": self.total_answered,
-            # 尚未作答时等于累计时间；作答后包含当前题用时（用于冻结计时显示）
-            "base_elapsed": round(self.accumulated_time, 3),
-            "start_wall": self.question_start_wall,
-            "xd_mode": self.xd_mode,
-            "difficulty": self.difficulty,
-            "finished": self.finished,
-            "audio_url": f"/api/game/{self.quiz_id}/audio",
-        }
-        if self.answered and self.answer_result:
-            data["result"] = self.answer_result
-        return data
+        with self.lock:
+            data = {
+                "quiz_id": self.quiz_id,
+                "options": list(self.current_options),
+                "answered": self.answered,
+                "remaining": self.remaining,
+                "total": self.total_questions,
+                "score": round(self.score, 2),
+                "correct_count": self.correct_count,
+                "total_answered": self.total_answered,
+                # 尚未作答时等于累计时间；作答后包含当前题用时（用于冻结计时显示）
+                "base_elapsed": round(self.accumulated_time, 3),
+                "start_wall": self.question_start_wall,
+                "xd_mode": self.xd_mode,
+                "difficulty": self.difficulty,
+                "finished": self.finished,
+                "audio_url": f"/api/game/{self.quiz_id}/audio",
+            }
+            if self.answered and self.answer_result:
+                data["result"] = self.answer_result
+            return data
 
 
 # ----------------------------- 游戏逻辑（对应 game.py 各 UI 的方法） -----------------------------
@@ -270,7 +287,8 @@ def count_songs(path):
 def start_game(folders, difficulty, xd_mode):
     """开始一局（对应 DifficultySelectionUI.start_quiz）"""
     global global_xd_mode
-    global_xd_mode = bool(xd_mode)
+    with _global_lock:
+        global_xd_mode = bool(xd_mode)
 
     if not difficulty:
         return {"ok": False, "error": "请选择难度", "message": "请先选择一个难度。"}
@@ -316,11 +334,12 @@ def start_game(folders, difficulty, xd_mode):
     quiz_id = uuid.uuid4().hex[:12]
     session = QuizSession(quiz_id, difficulty, global_xd_mode, quiz_easy, quiz_hard,
                           question_count, adjusted_message=adjusted)
-    _sessions[quiz_id] = session
-    _session_order.append(quiz_id)
-    while len(_session_order) > MAX_SESSIONS:
-        old = _session_order.pop(0)
-        _sessions.pop(old, None)
+    with _global_lock:
+        _sessions[quiz_id] = session
+        _session_order.append(quiz_id)
+        while len(_session_order) > MAX_SESSIONS:
+            old = _session_order.pop(0)
+            _sessions.pop(old, None)
 
     resp = {"ok": True, "quiz_id": quiz_id, "total": question_count,
             "difficulty": difficulty, "xd_mode": global_xd_mode}
@@ -330,94 +349,110 @@ def start_game(folders, difficulty, xd_mode):
 
 
 def get_session(quiz_id):
-    return _sessions.get(quiz_id)
+    with _global_lock:
+        return _sessions.get(quiz_id)
 
 
-# ----------------------------- HTTP 服务器 -----------------------------
+# ----------------------------- WSGI 应用 -----------------------------
 
-class GameHandler(BaseHTTPRequestHandler):
-    server_version = "XOXRandomMusicWeb/1.0"
+STATUS_TEXT = {
+    200: "200 OK",
+    204: "204 No Content",
+    404: "404 Not Found",
+    405: "405 Method Not Allowed",
+    416: "416 Range Not Satisfiable",
+    500: "500 Internal Server Error",
+}
 
-    # ---- 通用工具 ----
-    def log_message(self, fmt, *args):
-        log.info("%s - %s", self.address_string(), fmt % args)
 
-    def _send_json(self, data, status=200):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+def _wsgi_json(start_response, data, status=200):
+    """以 JSON 响应（等价于原 http.server 的 _send_json）"""
+    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    headers = [
+        ("Content-Type", "application/json; charset=utf-8"),
+        ("Content-Length", str(len(body))),
+        ("Cache-Control", "no-store"),
+    ]
+    start_response(STATUS_TEXT.get(status, "200 OK"), headers)
+    return [body]
 
-    def _read_json_body(self):
-        length = self.headers.get("Content-Length")
-        if not length:
-            return {}
+
+def _wsgi_static(start_response, name, content_type):
+    """返回 web/ 下的静态前端文件（等价于原 _serve_static）"""
+    file_path = os.path.join(WEB_DIR, name)
+    if not os.path.isfile(file_path):
+        return _wsgi_json(start_response, {"ok": False, "error": f"缺少前端文件: {name}"}, 404)
+    with open(file_path, "rb") as fh:
+        body = fh.read()
+    start_response("200 OK", [
+        ("Content-Type", content_type),
+        ("Content-Length", str(len(body))),
+        ("Cache-Control", "no-store"),
+    ])
+    return [body]
+
+
+def _wsgi_read_json(environ):
+    """读取并解析请求体 JSON（等价于原 _read_json_body）"""
+    try:
+        length = int(environ.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        return {}
+    if length <= 0:
+        return {}
+    try:
+        return json.loads(environ["wsgi.input"].read(length).decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def _wsgi_file_range(environ, start_response, file_path, content_type):
+    """流式返回文件，支持 HTTP Range（浏览器音频拖动进度需要）"""
+    if not os.path.isfile(file_path):
+        body = b"audio file not found"
+        start_response("404 Not Found", [
+            ("Content-Type", "text/plain; charset=utf-8"),
+            ("Content-Length", str(len(body))),
+        ])
+        return [body]
+
+    file_size = os.path.getsize(file_path)
+    range_header = environ.get("HTTP_RANGE")
+    start, end = 0, file_size - 1
+    status = "200 OK"
+
+    if range_header and range_header.startswith("bytes="):
         try:
-            length = int(length)
-        except ValueError:
-            return {}
-        if length <= 0:
-            return {}
-        try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
-        except Exception:
-            return {}
+            spec = range_header[6:].strip()
+            if spec.startswith("-"):            # bytes=-N 后缀范围
+                start = max(0, file_size - int(spec[1:]))
+            else:
+                parts = spec.split("-", 1)
+                start = int(parts[0])
+                if len(parts) > 1 and parts[1].strip():
+                    end = min(int(parts[1].strip()), file_size - 1)
+            if start > end or start >= file_size:
+                start_response("416 Range Not Satisfiable", [
+                    ("Content-Range", f"bytes */{file_size}"),
+                    ("Content-Length", "0"),
+                ])
+                return [b""]
+            status = "206 Partial Content"
+        except (ValueError, IndexError):
+            pass
 
-    def _serve_static(self, name, content_type):
-        file_path = os.path.join(WEB_DIR, name)
-        if not os.path.isfile(file_path):
-            self.send_error(404, f"缺少前端文件: {name}")
-            return
-        with open(file_path, "rb") as fh:
-            body = fh.read()
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+    length = end - start + 1
+    headers = [
+        ("Content-Type", content_type),
+        ("Accept-Ranges", "bytes"),
+        ("Content-Length", str(length)),
+        ("Cache-Control", "no-store"),
+    ]
+    if status == "206 Partial Content":
+        headers.append(("Content-Range", f"bytes {start}-{end}/{file_size}"))
+    start_response(status, headers)
 
-    def _serve_file_range(self, file_path, content_type):
-        """流式返回文件，支持 HTTP Range（浏览器音频拖动进度需要）"""
-        if not os.path.isfile(file_path):
-            self.send_error(404, "音频文件不存在")
-            return
-        file_size = os.path.getsize(file_path)
-        range_header = self.headers.get("Range")
-        start, end = 0, file_size - 1
-        status = 200
-
-        if range_header and range_header.startswith("bytes="):
-            try:
-                spec = range_header[6:].strip()
-                if spec.startswith("-"):            # bytes=-N 后缀范围
-                    start = max(0, file_size - int(spec[1:]))
-                else:
-                    parts = spec.split("-", 1)
-                    start = int(parts[0])
-                    if len(parts) > 1 and parts[1].strip():
-                        end = min(int(parts[1].strip()), file_size - 1)
-                if start > end or start >= file_size:
-                    self.send_response(416)
-                    self.send_header("Content-Range", f"bytes */{file_size}")
-                    self.end_headers()
-                    return
-                status = 206
-            except (ValueError, IndexError):
-                pass
-
-        length = end - start + 1
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(length))
-        self.send_header("Cache-Control", "no-store")
-        if status == 206:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
-        self.end_headers()
+    def stream():
         try:
             with open(file_path, "rb") as fh:
                 fh.seek(start)
@@ -426,109 +461,112 @@ class GameHandler(BaseHTTPRequestHandler):
                     chunk = fh.read(min(65536, remaining))
                     if not chunk:
                         break
-                    self.wfile.write(chunk)
+                    yield chunk
                     remaining -= len(chunk)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-
-    def _serve_audio(self, session):
-        file_path = session.current_correct_path
-        if not file_path or not os.path.isfile(file_path):
-            self.send_error(404, "音频文件不存在")
+        except Exception:
             return
-        ext = os.path.splitext(file_path)[1].lower()
-        content_type = AUDIO_EXT_CONTENT_TYPE.get(ext, "application/octet-stream")
-        self._serve_file_range(file_path, content_type)
 
-    # ---- 路由 ----
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = unquote(parsed.path)
-        try:
-            if path == "/favicon.ico":
-                self.send_response(204)
-                self.end_headers()
-                return
-            if path in ("/", "/index.html"):
-                self._serve_static("index.html", "text/html; charset=utf-8")
-            elif path == "/style.css":
-                self._serve_static("style.css", "text/css; charset=utf-8")
-            elif path == "/app.js":
-                self._serve_static("app.js", "application/javascript; charset=utf-8")
-            elif path == "/api/playlists":
-                self._send_json(list_playlists())
-            elif path == "/api/state":
-                self._send_json({"xd_mode": global_xd_mode})
-            elif path.startswith("/api/game/"):
-                parts = path[len("/api/game/"):].split("/")
-                if len(parts) != 2:
-                    self.send_error(404)
-                    return
-                quiz_id, action = parts
-                session = get_session(quiz_id)
-                if not session:
-                    self._send_json({"ok": False, "error": "会话不存在或已过期"}, 404)
-                    return
-                if action == "state":
-                    self._send_json(session.state())
-                elif action == "audio":
-                    self._serve_audio(session)
-                elif action == "result":
-                    self._send_json(session.result())
-                else:
-                    self.send_error(404)
-            else:
-                self.send_error(404, "未找到")
-        except Exception:
-            log.exception("GET 处理异常: %s", self.path)
-            try:
-                self._send_json({"ok": False, "error": "服务器内部错误"}, 500)
-            except Exception:
-                pass
-
-    def do_POST(self):
-        parsed = urlparse(self.path)
-        path = unquote(parsed.path)
-        body = self._read_json_body()
-        try:
-            if path == "/api/game/start":
-                folders = body.get("folders") or []
-                folders = [[str(f[0]), str(f[1])] for f in folders
-                           if isinstance(f, (list, tuple)) and len(f) >= 2]
-                difficulty = body.get("difficulty")
-                xd_mode = bool(body.get("xd_mode"))
-                self._send_json(start_game(folders, difficulty, xd_mode))
-            elif path.startswith("/api/game/"):
-                parts = path[len("/api/game/"):].split("/")
-                if len(parts) != 2:
-                    self.send_error(404)
-                    return
-                quiz_id, action = parts
-                session = get_session(quiz_id)
-                if not session:
-                    self._send_json({"ok": False, "error": "会话不存在或已过期"}, 404)
-                    return
-                if action == "answer":
-                    index = body.get("index")
-                    session.confirm(index if isinstance(index, int) else -1)
-                    self._send_json(session.state())
-                elif action == "next":
-                    session.advance()
-                    self._send_json({"ok": True, "state": session.state()})
-                else:
-                    self.send_error(404)
-            else:
-                self.send_error(404)
-        except Exception:
-            log.exception("POST 处理异常: %s", self.path)
-            try:
-                self._send_json({"ok": False, "error": "服务器内部错误"}, 500)
-            except Exception:
-                pass
+    return stream()
 
 
-class GameServer(ThreadingHTTPServer):
-    daemon_threads = True
+def _wsgi_audio(environ, start_response, session):
+    """在会话锁内取当前题音频路径，再流式返回（等价于原 _serve_audio）"""
+    with session.lock:
+        file_path = session.current_correct_path
+    if not file_path or not os.path.isfile(file_path):
+        body = b"audio file not found"
+        start_response("404 Not Found", [
+            ("Content-Type", "text/plain; charset=utf-8"),
+            ("Content-Length", str(len(body))),
+        ])
+        return [body]
+    ext = os.path.splitext(file_path)[1].lower()
+    content_type = AUDIO_EXT_CONTENT_TYPE.get(ext, "application/octet-stream")
+    return _wsgi_file_range(environ, start_response, file_path, content_type)
+
+
+def get_global_state():
+    with _global_lock:
+        return {"xd_mode": global_xd_mode}
+
+
+def _handle_get(environ, start_response, path):
+    if path in ("/", "/index.html"):
+        return _wsgi_static(start_response, "index.html", "text/html; charset=utf-8")
+    if path == "/style.css":
+        return _wsgi_static(start_response, "style.css", "text/css; charset=utf-8")
+    if path == "/app.js":
+        return _wsgi_static(start_response, "app.js", "application/javascript; charset=utf-8")
+    if path == "/api/playlists":
+        return _wsgi_json(start_response, list_playlists())
+    if path == "/api/state":
+        return _wsgi_json(start_response, get_global_state())
+    if path.startswith("/api/game/"):
+        parts = path[len("/api/game/"):].split("/")
+        if len(parts) != 2:
+            return _wsgi_json(start_response, {"ok": False, "error": "未找到"}, 404)
+        quiz_id, action = parts
+        session = get_session(quiz_id)
+        if not session:
+            return _wsgi_json(start_response, {"ok": False, "error": "会话不存在或已过期"}, 404)
+        if action == "state":
+            return _wsgi_json(start_response, session.state())
+        if action == "audio":
+            return _wsgi_audio(environ, start_response, session)
+        if action == "result":
+            return _wsgi_json(start_response, session.result())
+        return _wsgi_json(start_response, {"ok": False, "error": "未找到"}, 404)
+    return _wsgi_json(start_response, {"ok": False, "error": "未找到"}, 404)
+
+def _handle_post(environ, start_response, path):
+    body = _wsgi_read_json(environ)
+    if path == "/api/game/start":
+        folders = body.get("folders") or []
+        folders = [[str(f[0]), str(f[1])] for f in folders
+                   if isinstance(f, (list, tuple)) and len(f) >= 2]
+        difficulty = body.get("difficulty")
+        xd_mode = bool(body.get("xd_mode"))
+        return _wsgi_json(start_response, start_game(folders, difficulty, xd_mode))
+    if path.startswith("/api/game/"):
+        parts = path[len("/api/game/"):].split("/")
+        if len(parts) != 2:
+            return _wsgi_json(start_response, {"ok": False, "error": "未找到"}, 404)
+        quiz_id, action = parts
+        session = get_session(quiz_id)
+        if not session:
+            return _wsgi_json(start_response, {"ok": False, "error": "会话不存在或已过期"}, 404)
+        if action == "answer":
+            index = body.get("index")
+            session.confirm(index if isinstance(index, int) else -1)
+            return _wsgi_json(start_response, session.state())
+        if action == "next":
+            session.advance()
+            return _wsgi_json(start_response, {"ok": True, "state": session.state()})
+        return _wsgi_json(start_response, {"ok": False, "error": "未找到"}, 404)
+    return _wsgi_json(start_response, {"ok": False, "error": "未找到"}, 404)
+
+
+def application(environ, start_response):
+    """waitress 调用的 WSGI 入口"""
+    method = environ.get("REQUEST_METHOD", "GET").upper()
+    path = environ.get("PATH_INFO", "") or "/"
+    try:
+        if path == "/favicon.ico":
+            start_response("204 No Content", [("Content-Length", "0")])
+            return [b""]
+        if method == "GET":
+            return _handle_get(environ, start_response, path)
+        if method == "POST":
+            return _handle_post(environ, start_response, path)
+        body = b"method not allowed"
+        start_response("405 Method Not Allowed", [
+            ("Content-Type", "text/plain; charset=utf-8"),
+            ("Content-Length", str(len(body))),
+        ])
+        return [body]
+    except Exception:
+        log.exception("请求处理异常: %s %s", method, path)
+        return _wsgi_json(start_response, {"ok": False, "error": "服务器内部错误"}, 500)
 
 
 def find_free_port(host, port, tries=20):
@@ -553,17 +591,23 @@ def main():
         print("警告：找不到 music 目录，请确认音乐文件夹位于本脚本同级目录。")
 
     PORT = find_free_port(HOST, PORT)
-    server = GameServer((HOST, PORT), GameHandler)
-    url = f"http://{HOST}:{PORT}/"
+    url = f"http://127.0.0.1:{PORT}/"
     log.info("听歌猜名挑战 · 网页版已启动：%s", url)
-    log.info("按 Ctrl+C 停止服务器")
-    threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    log.info("监听地址: %s:%d（waitress 线程数=%d），按 Ctrl+C 停止服务器", HOST, PORT, THREADS)
+
+    def _open_browser():
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    if os.environ.get("XOX_WEB_OPEN_BROWSER", "1") != "0":
+        threading.Timer(0.8, _open_browser).start()
     try:
-        server.serve_forever()
+        serve(application, host=HOST, port=PORT, threads=THREADS)
     except KeyboardInterrupt:
         log.info("收到退出信号，正在关闭...")
     finally:
-        server.server_close()
         log.info("服务器已关闭")
 
 

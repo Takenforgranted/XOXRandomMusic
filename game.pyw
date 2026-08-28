@@ -31,7 +31,8 @@ class ResultWindow(QMainWindow):
         layout.addWidget(title_label)
 
         # 分数显示标签
-        self.score_label = QLabel(f"您的最终得分：{global_score} 分", self)
+        rounded_score = round(global_score, 2)
+        self.score_label = QLabel(f"您的最终得分：{rounded_score} 分", self)
         self.score_label.setStyleSheet("font-size: 18px; color: #666;")
         self.score_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.score_label)
