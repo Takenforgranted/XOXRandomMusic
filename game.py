@@ -15,6 +15,9 @@ import random
 import sys
 import time
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_MUSIC_ROOT = os.path.join(BASE_DIR, "music")
+
 os.environ["QT_MULTIMEDIA_PREFERRED_PLUGINS"] = "ffmpeg"
 
 global_score = 0.0
@@ -849,7 +852,7 @@ class QuizUI(QMainWindow):
 
 
 class DifficultySelectionUI(QMainWindow):
-    def __init__(self, selected_folders, music_root="music"):
+    def __init__(self, selected_folders, music_root=DEFAULT_MUSIC_ROOT):
         super().__init__()
         self.selected_folders = selected_folders
         self.music_root = music_root
@@ -1048,7 +1051,7 @@ class DifficultySelectionUI(QMainWindow):
 
 
 class SongSelectionUI(QMainWindow):
-    def __init__(self, music_root="music"):
+    def __init__(self, music_root=DEFAULT_MUSIC_ROOT):
         super().__init__()
         self.music_root = music_root
         self.selected_folders = set()
