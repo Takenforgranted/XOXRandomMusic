@@ -74,7 +74,7 @@ pip install PyQt5 PyQt5-Qt5 PyQt5-sip
 python game.py
 ```
 
-**新增:**网页端模式，双击bat即可运行！！！
+**新增**:网页端模式，双击bat即可运行！！！
 
 ## 游戏使用说明
 
