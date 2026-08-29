@@ -66,8 +66,8 @@
 
 1. 克隆仓库：
 ```bash
-git clone https://github.com/yourusername/sunige-song-guessing-game.git
-cd sunige-song-guessing-game
+git clone https://github.com/Takenforgranted/XOXRandomMusic.git
+cd XOXRandomMusic
 ```
 
 2. 创建虚拟环境（可选）：
@@ -77,9 +77,14 @@ source venv/bin/activate  # Linux/macOS
 venv\Scripts\activate    # Windows
 ```
 
-3. 安装依赖：
+3. 安装依赖
+桌面版
 ```bash
 pip install PyQt5 PyQt5-Qt5 PyQt5-sip
+```
+网页版
+```bash
+pip install waitress
 ```
 
 4. 运行游戏（任选其一）：
@@ -93,6 +98,8 @@ pip install PyQt5 PyQt5-Qt5 PyQt5-sip
    python web_server.py
    ```
    或在 Windows 下直接双击 `启动网页游戏.bat` 一键启动网页版。
+   
+   或在 Linux/macOS 下使用 `bash start.sh` 一键启动网页版（激活虚拟环境+启动服务器）。
 
 ## 游戏使用说明
 
